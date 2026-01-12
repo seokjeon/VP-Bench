@@ -9,8 +9,13 @@ DATASET_DIR="$SCRIPT_DIR"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 로그 디렉토리 생성 및 워크플로우 로그 기록
-mkdir -p "$PROJECT_ROOT/logs"
-exec > >(tee -a "$PROJECT_ROOT/logs/workflow.log") 2>&1
+LOG_DIR="$PROJECT_ROOT/logs"
+mkdir -p "$LOG_DIR/dataset_pipeline"
+LOG_FILE="$LOG_DIR/dataset_pipeline/$(date +"%Y%m%d_%H%M%S")_dataset_pipeline.log"
+
+# 모든 출력을 로그 파일과 화면에 동시에 출력
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[$(date)] Command: $0 $@"
 
 # Step 1: codeLink, CVE ID, project 추출 (jasper만)
 STEP1_OUT="$DATASET_DIR/output/jasper/VP-Bench_jasper_(codeLink,CVE ID).csv"

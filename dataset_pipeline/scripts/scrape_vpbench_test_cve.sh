@@ -17,9 +17,6 @@ done
 
 # 인자 및 로그 파일 설정
 TARGET=${1:-all}
-LOG_DIR="$PROJECT_ROOT/logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/$(date +"%Y%m%d_%H%M%S")_${TARGET}_execution.log"
 
 {
     if [ "$TARGET" = "all" ]; then
