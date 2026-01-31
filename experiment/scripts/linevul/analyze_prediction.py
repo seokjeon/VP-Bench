@@ -34,6 +34,29 @@ from sklearn.metrics import (
 )
 
 
+# =============================================================================
+# line_vul.py와 동일한 Dataset 클래스 정의 (pickle 호환성)
+# pickle 파일이 __main__.Dataset을 참조하므로 동일하게 정의해야 함
+# =============================================================================
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, encodings, labels=None):
+        self.encodings = encodings
+        self.labels = labels
+
+    def __getitem__(self, idx):
+        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
+        if self.labels:
+            item["labels"] = torch.tensor(self.labels[idx])
+        return item
+
+    def __len__(self):
+        return len(self.encodings["input_ids"])
+
+
+# pickle이 __main__.Dataset을 찾을 수 있도록 등록
+sys.modules['__main__'].Dataset = Dataset
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='LineVul 모델 정밀 분석')
     parser.add_argument('--dataset-path', required=True, help='데이터셋 경로 (pickle 파일 위치)')
