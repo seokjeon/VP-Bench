@@ -189,13 +189,24 @@ for PROJECT in "${SELECTED_PROJECTS[@]}"; do
     if [ "$MODE" = "realvul" ]; then
         # TODO: dataset_type을 라벨에 맞게 지정
         mkdir -p "$PROJECT_OUTPUT_DIR"
+        DATASET_CACHE_DIR="$CACHE_DIR/realvul_datasets"
+        SOURCE_CODE_CACHE_DIR="$CACHE_DIR/realvul_source_codes"
+        mkdir -p "$DATASET_CACHE_DIR" "$SOURCE_CODE_CACHE_DIR"
+
         STEP5_OUT="$PROJECT_OUTPUT_DIR/${PROJECT}_dataset.csv"
-        if [ ! -f "$STEP5_OUT.old" ]; then
-            wget -O "$STEP5_OUT.old" "https://github.com/seokjeon/VP-Bench/releases/download/RealVul_Dataset/${PROJECT}_dataset.csv"
+
+        # 이전에 생성된 RealVul 데이터셋과 소스코드 다운로드
+        if [ ! -f "$DATASET_CACHE_DIR/${PROJECT}_dataset.csv.old" ]; then
+            wget -O "$DATASET_CACHE_DIR/${PROJECT}_dataset.csv.old" "https://github.com/seokjeon/VP-Bench/releases/download/RealVul_Dataset/${PROJECT}_dataset.csv"
         fi
-        if [ ! -f "$PROJECT_OUTPUT_DIR/${PROJECT}_source_code.tar.gz.old" ]; then
-            wget -O "$PROJECT_OUTPUT_DIR/${PROJECT}_source_code.tar.gz.old" "https://github.com/seokjeon/VP-Bench/releases/download/RealVul_Dataset/${PROJECT}_source_code.tar.gz"
+        cp "$DATASET_CACHE_DIR/${PROJECT}_dataset.csv.old" "$PROJECT_OUTPUT_DIR"
+
+        if [ ! -f "$SOURCE_CODE_CACHE_DIR/${PROJECT}_source_code.tar.gz.old" ]; then
+            wget -O "$SOURCE_CODE_CACHE_DIR/${PROJECT}_source_code.tar.gz.old" "https://github.com/seokjeon/VP-Bench/releases/download/RealVul_Dataset/${PROJECT}_source_code.tar.gz"
         fi
+        cp "$SOURCE_CODE_CACHE_DIR/${PROJECT}_source_code.tar.gz.old" "$PROJECT_OUTPUT_DIR"
+        
+        # 이전 소스코드 압축 해제
         if [ ! -d "$PROJECT_OUTPUT_DIR/source_code.old" ]; then
             tar -xf "$PROJECT_OUTPUT_DIR/${PROJECT}_source_code.tar.gz.old" -C "$PROJECT_OUTPUT_DIR"
             mv "$PROJECT_OUTPUT_DIR/source_code" "$PROJECT_OUTPUT_DIR/source_code.old"
