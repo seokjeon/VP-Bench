@@ -56,6 +56,25 @@ wget -nc -P "$DOWNLOADS_DIR/RealVul/datasets/" https://github.com/seokjeon/VP-Be
 wget -nc -P "$DOWNLOADS_DIR/RealVul/datasets/" https://github.com/seokjeon/VP-Bench/releases/download/RealVul_Dataset/jasper_source_code.tar.gz
 tar -xf $DOWNLOADS_DIR/RealVul/datasets/jasper_source_code.tar.gz -C "$DOWNLOADS_DIR/RealVul/datasets/"
 
+# Extended RealVul-FuncPair (이미 존재하면 스킵)
+echo "[2.5/5] Extended RealVul-FuncPair 데이터셋 다운로드..."
+/home/mjbin/lab/VP-Bench/baseline/RealVul/Experiments/LineVul/extended_realvul
+
+EXTENDED_REALVUL_DIR="$DOWNLOADS_DIR/LineVul/extended_realvul"
+EXTENDED_REALVUL_FILE="$EXTENDED_REALVUL_DIR/all_projects_vul_patch_dataset.csv"
+EXTENDED_REALVUL_URL="https://github.com/seokjeon/VP-Bench/releases/download/VP-Bench_Test_Dataset/all_projects_vul_patch_dataset.csv"
+
+echo "  [Extended RealVul] 처리 중..."
+mkdir -p "$EXTENDED_REALVUL_DIR"
+if [ -s "$EXTENDED_REALVUL_FILE" ]; then
+    echo "    - all_projects_vul_patch_dataset.csv 이미 존재 (스킵)"
+else
+    echo "    - all_projects_vul_patch_dataset.csv 다운로드 중..."
+    rm -f "$EXTENDED_REALVUL_FILE"
+    wget -O "$EXTENDED_REALVUL_FILE" "$EXTENDED_REALVUL_URL"
+    echo "    - 다운로드 완료"
+fi
+
 # LineVul 모델 다운로드
 echo "[3/5] LineVul 모델 다운로드..."
 echo $PWD

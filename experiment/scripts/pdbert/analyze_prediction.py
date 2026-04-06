@@ -50,6 +50,20 @@ else:
 FEATURE_BASENAME = 'test_last_hidden_state_vectors'
 RAW_MODEL_EVAL_DIRNAME = 'raw_model_eval'
 COMBINED_TEST_TSNE_BASENAME = 'combined_test_last_hidden_state_vectors'
+DEFAULT_TSNE_FIGSIZE = (10, 10)
+DEFAULT_TSNE_MARKER_SIZE = 3
+DEFAULT_TSNE_MARKER_LINEWIDTH = 0.2
+DEFAULT_TSNE_MARKER_ALPHA = 0.35
+DEFAULT_TSNE_MARKER_ZORDER = 2
+DEFAULT_TSNE_SHUFFLE_SEED = 0
+BEFORE_NON_VULN_TSNE_COLOR = '#31a354'
+AFTER_NON_VULN_TSNE_COLOR = '#3182bd'
+BEFORE_VULN_TSNE_COLOR = '#cb181d'
+AFTER_VULN_TSNE_COLOR = '#f16913'
+SINGLE_TSNE_TITLE = 'PDBERT t-SNE on SARD-Juliet SA TracePair'
+COMBINED_TSNE_TITLE = 'PDBERT t-SNE on SARD-Juliet SA TracePair (Combined)'
+DEFAULT_LEGEND_FONT_SIZE = 12
+DEFAULT_LEGEND_Y = 1.03
 
 
 def parse_args():
@@ -69,6 +83,149 @@ def build_feature_artifact_paths(model_dir: str) -> tuple[Path, Path, Path]:
         Path(f'{base_path}.jpeg'),
         Path(f'{base_path}-tsne-features.json'),
     )
+
+
+def _resolve_group_style(stage_label: str, target_value: int) -> dict:
+    if stage_label == 'Before Fine-tuned' and target_value == 0:
+        return {'color': BEFORE_NON_VULN_TSNE_COLOR}
+    if stage_label == 'After Fine-tuned' and target_value == 0:
+        return {'color': AFTER_NON_VULN_TSNE_COLOR}
+    if stage_label == 'Before Fine-tuned' and target_value == 1:
+        return {'color': BEFORE_VULN_TSNE_COLOR}
+    return {'color': AFTER_VULN_TSNE_COLOR}
+
+
+def _build_group_spec(
+    stage_label: str,
+    target_value: int,
+    *,
+    model_value: int | None = None,
+    zorder: int | None = None,
+) -> dict:
+    style = _resolve_group_style(stage_label, target_value)
+    spec = {
+        'label': f"{stage_label} / {'Vuln' if target_value == 1 else 'Non-Vuln'}",
+        'target_value': target_value,
+        'marker': 'o',
+        'facecolor': style['color'],
+        'edgecolor': style['color'],
+        'alpha': DEFAULT_TSNE_MARKER_ALPHA,
+        'linewidth': DEFAULT_TSNE_MARKER_LINEWIDTH,
+    }
+    if model_value is not None:
+        spec['model_value'] = model_value
+    spec['zorder'] = DEFAULT_TSNE_MARKER_ZORDER if zorder is None else zorder
+    return spec
+
+
+def _resolve_single_group_specs(title: str | None) -> list[dict]:
+    title_str = str(title) if title is not None else ''
+    is_raw_model = RAW_MODEL_EVAL_DIRNAME in title_str
+    stage_label = 'Before Fine-tuned' if is_raw_model else 'After Fine-tuned'
+    return [
+        _build_group_spec(stage_label, 0),
+        _build_group_spec(stage_label, 1),
+    ]
+
+
+def _resolve_paired_group_specs() -> list[dict]:
+    return [
+        _build_group_spec(
+            'Before Fine-tuned',
+            1,
+            model_value=1,
+        ),
+        _build_group_spec(
+            'After Fine-tuned',
+            1,
+            model_value=0,
+        ),
+        _build_group_spec(
+            'Before Fine-tuned',
+            0,
+            model_value=1,
+        ),
+        _build_group_spec(
+            'After Fine-tuned',
+            0,
+            model_value=0,
+        ),
+    ]
+
+
+def _scatter_groups(X, labels, group_specs, *, model_source=None):
+    draw_queue = []
+    for spec in group_specs:
+        mask = labels == spec['target_value']
+        if model_source is not None:
+            mask &= model_source == spec['model_value']
+
+        point_indices = np.flatnonzero(mask)
+        if point_indices.size == 0:
+            continue
+
+        plt.scatter(
+            [],
+            [],
+            marker=spec['marker'],
+            facecolors=spec['facecolor'],
+            edgecolors=spec['edgecolor'],
+            c=None,
+            s=DEFAULT_TSNE_MARKER_SIZE,
+            alpha=spec['alpha'],
+            linewidths=spec['linewidth'],
+            label=spec['label'],
+            zorder=spec.get('zorder', DEFAULT_TSNE_MARKER_ZORDER),
+        )
+        for point_index in point_indices:
+            draw_queue.append((point_index, spec))
+
+    if not draw_queue:
+        return
+
+    rng = np.random.default_rng(DEFAULT_TSNE_SHUFFLE_SEED)
+    for queue_index in rng.permutation(len(draw_queue)):
+        point_index, spec = draw_queue[queue_index]
+        point = X[point_index]
+        plt.scatter(
+            point[0],
+            point[1],
+            marker=spec['marker'],
+            facecolors=spec['facecolor'],
+            edgecolors=spec['edgecolor'],
+            c=None,
+            s=DEFAULT_TSNE_MARKER_SIZE,
+            alpha=spec['alpha'],
+            linewidths=spec['linewidth'],
+            label='_nolegend_',
+            zorder=spec.get('zorder', DEFAULT_TSNE_MARKER_ZORDER),
+        )
+
+
+def _apply_tsne_layout(
+    plot_title: str | None,
+    *,
+    legend_ncol: int,
+    top_margin: float = 0.9,
+    legend_fontsize: int = DEFAULT_LEGEND_FONT_SIZE,
+):
+    axes = plt.gca()
+    axes.set_box_aspect(1)
+    plt.xticks([]), plt.yticks([])
+    if plot_title is not None:
+        plt.title(plot_title)
+    plt.legend(
+        frameon=False,
+        loc='lower center',
+        bbox_to_anchor=(0.5, DEFAULT_LEGEND_Y),
+        ncol=legend_ncol,
+        borderaxespad=0.0,
+        fontsize=legend_fontsize,
+        markerscale=5.0,
+        handletextpad=0.6,
+        columnspacing=1.4,
+    )
+    plt.tight_layout(rect=(0, 0, 1, top_margin))
 
 
 def _tensor_to_list(value) -> list:
@@ -117,29 +274,13 @@ def plot_embedding(X_org, y, title=None, new=True):
 
     if sns is not None:
         sns.set(style='white')
-    plt.figure(figsize=(10, 10), edgecolor='black')
-    plt.scatter(
-        X[Y == 0][:, 0],
-        X[Y == 0][:, 1],
-        marker='.',
-        c='tab:blue',
-        s=12,
-        linewidth=3.5,
-        label='Non-Vuln',
+    plt.figure(figsize=DEFAULT_TSNE_FIGSIZE, edgecolor='black')
+    _scatter_groups(X, Y, _resolve_single_group_specs(title))
+    _apply_tsne_layout(
+        SINGLE_TSNE_TITLE if title is not None else None,
+        legend_ncol=2,
+        top_margin=0.9,
     )
-    plt.scatter(
-        X[Y == 1][:, 0],
-        X[Y == 1][:, 1],
-        marker='^',
-        c='tab:orange',
-        s=12,
-        linewidth=3.5,
-        label='Vuln',
-    )
-    plt.xticks([]), plt.yticks([])
-    if title is not None:
-        plt.title('PDBERT t-SNE on VulPatchDS')
-    plt.tight_layout()
     plt.savefig(str(title) + '.jpeg', dpi=1000)
     plt.close()
     return True
@@ -188,77 +329,18 @@ def plot_paired_embedding(fine_X_org, fine_labels, raw_X_org, raw_labels, title=
 
     if sns is not None:
         sns.set(style='white')
-    plt.figure(figsize=(10, 10), edgecolor='black')
-    group_specs = [
-        {
-            'label': 'Before Fine-tuned / Vuln',
-            'model_value': 1,
-            'target_value': 1,
-            'marker': 'o',
-            'facecolor': 'tab:red',
-            'edgecolor': 'tab:red',
-            'linewidth': 0.8,
-        },
-        {
-            'label': 'Before Fine-tuned / Non-Vuln',
-            'model_value': 1,
-            'target_value': 0,
-            'marker': 'o',
-            'facecolor': 'tab:blue',
-            'edgecolor': 'tab:blue',
-            'linewidth': 0.8,
-        },
-        {
-            'label': 'After Fine-tuned / Vuln',
-            'model_value': 0,
-            'target_value': 1,
-            'marker': 'o',
-            'facecolor': 'none',
-            'edgecolor': 'tab:red',
-            'linewidth': 1.2,
-        },
-        {
-            'label': 'After Fine-tuned / Non-Vuln',
-            'model_value': 0,
-            'target_value': 0,
-            'marker': 'o',
-            'facecolor': 'none',
-            'edgecolor': 'tab:blue',
-            'linewidth': 1.2,
-        },
-    ]
-    for spec in group_specs:
-        mask = (model_source == spec['model_value']) & (combined_labels == spec['target_value'])    # 4가지 그룹별로 마스크 생성: fine-tuned 모델의 취약점, fine-tuned 모델의 비취약점, raw 모델의 취약점, raw 모델의 비취약점
-        points = X[mask]
-        if points.size == 0:
-            continue
-        plt.scatter(
-            points[:, 0],
-            points[:, 1],
-            marker=spec['marker'],
-            facecolors=spec['facecolor'],
-            edgecolors=spec['edgecolor'],
-            c=None,
-            s=72,
-            linewidths=spec['linewidth'],
-            label=spec['label'],
-        )
-
-    plt.xticks([]), plt.yticks([])
-    if title is not None:
-        plt.title('PDBERT t-SNE on VulPatchDS (Combined)')
-    plt.legend(
-        frameon=False,
-        loc='lower center',
-        bbox_to_anchor=(0.5, 1.03),
-        ncol=4,
-        borderaxespad=0.0,
-        fontsize=13,
-        markerscale=1.8,
-        handletextpad=0.6,
-        columnspacing=1.4,
+    plt.figure(figsize=DEFAULT_TSNE_FIGSIZE, edgecolor='black')
+    _scatter_groups(
+        X,
+        combined_labels,
+        _resolve_paired_group_specs(),
+        model_source=model_source,
     )
-    plt.tight_layout(rect=(0, 0, 1, 0.9))
+    _apply_tsne_layout(
+        COMBINED_TSNE_TITLE if title is not None else None,
+        legend_ncol=2,
+        top_margin=0.86,
+    )
     plt.savefig(str(title) + '.jpeg', dpi=1000)
     plt.close()
     return True
