@@ -10,15 +10,12 @@ PDBERT 모델 정밀 분석 스크립트
 import argparse
 import json
 import sys
-from pathlib import Path
 from pprint import pprint
 
-import matplotlib
 import numpy as np
 import torch
 from allennlp.data.data_loaders import MultiProcessDataLoader
 from allennlp.models.model import Model
-from sklearn import manifold
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -32,24 +29,12 @@ from tqdm import tqdm
 sys.path.extend(['/PDBERT/downstream', '/PDBERT/downstream/..'])
 
 from downstream import *
+from downstream.tsne import (
+    build_feature_artifact_paths,
+    maybe_export_paired_test_tsne,
+    plot_embedding,
+)
 from utils.allennlp_utils.build_utils import build_dataset_reader_from_config
-
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-try:
-    import seaborn as sns
-except ModuleNotFoundError:
-    sns = None
-
-if sns is not None:
-    sns.set(rc={'figure.figsize': (11.7, 8.27)})
-else:
-    plt.rcParams['figure.figsize'] = (11.7, 8.27)
-
-FEATURE_BASENAME = 'test_last_hidden_state_vectors'
-RAW_MODEL_EVAL_DIRNAME = 'raw_model_eval'
-COMBINED_TEST_TSNE_BASENAME = 'combined_test_last_hidden_state_vectors'
 
 
 def parse_args():
@@ -62,299 +47,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_feature_artifact_paths(model_dir: str) -> tuple[Path, Path, Path]:
-    base_path = Path(model_dir) / FEATURE_BASENAME
-    return (
-        base_path.with_suffix('.npz'),
-        Path(f'{base_path}.jpeg'),
-        Path(f'{base_path}-tsne-features.json'),
-    )
-
-
 def _tensor_to_list(value) -> list:
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().reshape(-1).tolist()
     if isinstance(value, list):
         return value
     return [value]
-
-# 고차원 벡터를 2차원으로 축소하는 로직
-def _fit_embedding(X_org):
-    if X_org.shape[0] < 2:
-        return None
-
-    perplexity = min(30, X_org.shape[0] - 1) # 한 점이 주변 몇 개 이웃을 중요하게 볼지 결정하는 하이퍼파라미터. 일반적으로 5~50 사이의 값을 사용하며, 데이터 샘플 수보다 작은 값이어야 합니다.
-    tsne = manifold.TSNE(n_components=2, init='pca', random_state=0, perplexity=perplexity) # 순서대로 - n_components: 축소된 차원 수 (여기서는 2차원), init: 초기화 방법 (점의 시작위치를 PCA로 초기화), random_state: 난수 시드
-    print('Fitting TSNE!')
-    X = tsne.fit_transform(X_org) # 고차원 벡터 X_org을 2차원으로 축소하여 X에 저장: (160, 768) -> (160, 2)
-    x_min, x_max = np.min(X, 0), np.max(X, 0)
-    denom = np.where((x_max - x_min) == 0, 1, (x_max - x_min)) # (x_max - x_min)이 0인 경우에는 나눗셈 오류를 방지하기 위해 1로 대체, 그렇지 않은 경우에는 원래의 (x_max - x_min) 값을 사용
-    return (X - x_min) / denom # 정규화
-
-
-def plot_embedding(X_org, y, title=None, new=True):
-    X_org = np.asarray(X_org)
-    Y = np.asarray(y)
-
-    if X_org.shape[0] < 2:
-        print(f'Skipping TSNE for {title}: need at least 2 samples, got {X_org.shape[0]}')
-        return False
-
-    cache_path = str(title) + '-tsne-features.json'
-    if not new and Path(cache_path).exists():
-        with open(cache_path, 'r', encoding='utf-8') as file:
-            _x, _y = json.load(file)
-        X = np.array(_x)
-        Y = np.array(_y)
-    else:
-        X = _fit_embedding(X_org)
-        if X is None:
-            print(f'Skipping TSNE for {title}: need at least 2 samples, got {X_org.shape[0]}')
-            return False
-
-        with open(cache_path, 'w', encoding='utf-8') as file_:
-            json.dump([X.tolist(), Y.tolist()], file_)
-
-    if sns is not None:
-        sns.set(style='white')
-    plt.figure(figsize=(10, 10), edgecolor='black')
-    plt.scatter(
-        X[Y == 0][:, 0],
-        X[Y == 0][:, 1],
-        marker='.',
-        c='tab:blue',
-        s=12,
-        linewidth=3.5,
-        label='Non-Vuln',
-    )
-    plt.scatter(
-        X[Y == 1][:, 0],
-        X[Y == 1][:, 1],
-        marker='^',
-        c='tab:orange',
-        s=12,
-        linewidth=3.5,
-        label='Vuln',
-    )
-    plt.xticks([]), plt.yticks([])
-    if title is not None:
-        plt.title('PDBERT t-SNE on VulPatchDS')
-    plt.tight_layout()
-    plt.savefig(str(title) + '.jpeg', dpi=1000)
-    plt.close()
-    return True
-
-
-def plot_paired_embedding(fine_X_org, fine_labels, raw_X_org, raw_labels, title=None, new=True):
-    fine_X_org = np.asarray(fine_X_org) # fine-tuned 모델의 feature matrix
-    fine_y = np.asarray(fine_labels)    # fine-tuned 모델의 label(취약/비취약)
-    raw_X_org = np.asarray(raw_X_org)   # raw 모델의 feature matrix
-    raw_y = np.asarray(raw_labels)      # raw 모델의 label(취약/비취약)
-
-    combined_features = np.concatenate([fine_X_org, raw_X_org], axis=0)
-    combined_labels = np.concatenate([fine_labels, raw_labels], axis=0)
-    model_source = np.concatenate(
-        [
-            np.zeros(fine_X_org.shape[0], dtype=np.int64),
-            np.ones(raw_X_org.shape[0], dtype=np.int64),
-        ],
-        axis=0,
-    )
-
-    cache_path = str(title) + '-tsne-features.json'
-    if not new and Path(cache_path).exists(): # 기본적으로 실행되지 않는 if 블럭(new=True)
-        with open(cache_path, 'r', encoding='utf-8') as file:
-            payload = json.load(file)
-        X = np.array(payload['embedding'])
-        combined_labels = np.array(payload['labels'])
-        model_source = np.array(payload['model_source'])
-    else:
-        X = _fit_embedding(combined_features) # 고차원 벡터를 2차원으로 축소하는 로직
-        if X is None:
-            print(
-                f'Skipping paired TSNE for {title}: '
-                f'need at least 2 samples, got {combined_features.shape[0]}'
-            )
-            return False
-        with open(cache_path, 'w', encoding='utf-8') as file_:
-            json.dump(
-                {
-                    'embedding': X.tolist(),                # 축소된 2차원 벡터 리스트
-                    'labels': combined_labels.tolist(),     # 취약/비취약 라벨 리스트
-                    'model_source': model_source.tolist(),  # fine-tuned 모델(0)과 raw 모델(1)을 구분하는 리스트
-                },
-                file_,
-            )
-
-    if sns is not None:
-        sns.set(style='white')
-    plt.figure(figsize=(10, 10), edgecolor='black')
-    group_specs = [
-        {
-            'label': 'Before Fine-tuned / Vuln',
-            'model_value': 1,
-            'target_value': 1,
-            'marker': 'o',
-            'facecolor': 'tab:red',
-            'edgecolor': 'tab:red',
-            'linewidth': 0.8,
-        },
-        {
-            'label': 'Before Fine-tuned / Non-Vuln',
-            'model_value': 1,
-            'target_value': 0,
-            'marker': 'o',
-            'facecolor': 'tab:blue',
-            'edgecolor': 'tab:blue',
-            'linewidth': 0.8,
-        },
-        {
-            'label': 'After Fine-tuned / Vuln',
-            'model_value': 0,
-            'target_value': 1,
-            'marker': 'o',
-            'facecolor': 'none',
-            'edgecolor': 'tab:red',
-            'linewidth': 1.2,
-        },
-        {
-            'label': 'After Fine-tuned / Non-Vuln',
-            'model_value': 0,
-            'target_value': 0,
-            'marker': 'o',
-            'facecolor': 'none',
-            'edgecolor': 'tab:blue',
-            'linewidth': 1.2,
-        },
-    ]
-    for spec in group_specs:
-        mask = (model_source == spec['model_value']) & (combined_labels == spec['target_value'])    # 4가지 그룹별로 마스크 생성: fine-tuned 모델의 취약점, fine-tuned 모델의 비취약점, raw 모델의 취약점, raw 모델의 비취약점
-        points = X[mask]
-        if points.size == 0:
-            continue
-        plt.scatter(
-            points[:, 0],
-            points[:, 1],
-            marker=spec['marker'],
-            facecolors=spec['facecolor'],
-            edgecolors=spec['edgecolor'],
-            c=None,
-            s=72,
-            linewidths=spec['linewidth'],
-            label=spec['label'],
-        )
-
-    plt.xticks([]), plt.yticks([])
-    if title is not None:
-        plt.title('PDBERT t-SNE on VulPatchDS (Combined)')
-    plt.legend(
-        frameon=False,
-        loc='lower center',
-        bbox_to_anchor=(0.5, 1.03),
-        ncol=4,
-        borderaxespad=0.0,
-        fontsize=13,
-        markerscale=1.8,
-        handletextpad=0.6,
-        columnspacing=1.4,
-    )
-    plt.tight_layout(rect=(0, 0, 1, 0.9))
-    plt.savefig(str(title) + '.jpeg', dpi=1000)
-    plt.close()
-    return True
-
-
-def load_feature_artifact(feature_npz_path: Path) -> tuple[np.ndarray, np.ndarray]:
-    with np.load(feature_npz_path) as payload:
-        return np.asarray(payload['features']), np.asarray(payload['labels'])
-
-
-def validate_paired_feature_artifacts(
-    fine_features: np.ndarray,
-    fine_labels: np.ndarray,
-    raw_features: np.ndarray,
-    raw_labels: np.ndarray,
-    *,
-    fine_feature_npz_path: Path,
-    raw_feature_npz_path: Path,
-) -> None:
-    if fine_features.ndim != 2 or raw_features.ndim != 2:
-        raise ValueError(
-            'Expected 2D feature arrays for paired TSNE: '
-            f'{fine_feature_npz_path} -> {fine_features.shape}, '
-            f'{raw_feature_npz_path} -> {raw_features.shape}'
-        )
-
-    if fine_features.shape[1] != raw_features.shape[1]:
-        raise ValueError(
-            'Fine-tuned and raw test feature dimensions do not match: '
-            f'{fine_feature_npz_path} -> {fine_features.shape}, '
-            f'{raw_feature_npz_path} -> {raw_features.shape}'
-        )
-
-    if fine_features.shape[0] != raw_features.shape[0]:
-        raise ValueError(
-            'Fine-tuned and raw test sample counts do not match: '
-            f'{fine_feature_npz_path} -> {fine_features.shape[0]}, '
-            f'{raw_feature_npz_path} -> {raw_features.shape[0]}'
-        )
-
-    if fine_labels.shape != raw_labels.shape or not np.array_equal(fine_labels, raw_labels):
-        raise ValueError(
-            'Fine-tuned and raw test labels do not match: '
-            f'{fine_feature_npz_path} -> {fine_labels.shape}, '
-            f'{raw_feature_npz_path} -> {raw_labels.shape}'
-        )
-
-
-def maybe_export_paired_test_tsne(raw_feature_npz_path: Path) -> tuple[Path | None, Path | None]:
-    raw_feature_npz_path = Path(raw_feature_npz_path)
-    raw_output_dir = raw_feature_npz_path.parent
-    if raw_output_dir.name != RAW_MODEL_EVAL_DIRNAME:
-        return None, None
-
-    fine_output_dir = raw_output_dir.parent # vuln_patch 경로
-    fine_feature_npz_path, _, _ = build_feature_artifact_paths(str(fine_output_dir))
-    if not fine_feature_npz_path.exists():  # vuln_patch/test_last_hidden_state_vectors.npz
-        print(
-            'Skipping paired TSNE: fine-tuned test hidden states not found under '
-            f'{fine_output_dir}'
-        )
-        return None, None
-
-    fine_features, fine_labels = load_feature_artifact(fine_feature_npz_path)
-    raw_features, raw_labels = load_feature_artifact(raw_feature_npz_path)
-    
-    # feature 검증 함수
-    validate_paired_feature_artifacts(
-        fine_features,
-        fine_labels,
-        raw_features,
-        raw_labels,
-        fine_feature_npz_path=fine_feature_npz_path,
-        raw_feature_npz_path=raw_feature_npz_path,
-    )
-
-    # combined t-SNE 이미지 및 캐시 경로 생성
-    combined_output_base = fine_output_dir / COMBINED_TEST_TSNE_BASENAME
-    combined_tsne_image_path = Path(f'{combined_output_base}.jpeg')
-    combined_tsne_cache_path = Path(f'{combined_output_base}-tsne-features.json')
-
-    # combined tsne 연산 로직
-    tsne_generated = plot_paired_embedding(
-        fine_features,  # fine-tuned 모델의 feature matrix
-        fine_labels,    # fine-tuned 모델의 label(취약/비취약)
-        raw_features,   # raw 모델의 feature matrix
-        raw_labels,     # raw 모델의 label(취약/비취약)
-        title=str(combined_output_base), # combined t-SNE 이미지 및 캐시의 공통 베이스 이름 (확장자 제외)
-        new=True,
-    )
-    if not tsne_generated:
-        return None, None
-
-    print(f'Paired t-SNE 이미지 저장 완료: {combined_tsne_image_path}')
-    print(f'Paired t-SNE 캐시 저장 완료: {combined_tsne_cache_path}')
-    return combined_tsne_image_path, combined_tsne_cache_path
 
 
 def predict_on_dataloader(model, data_loader):
